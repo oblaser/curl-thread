@@ -1,30 +1,99 @@
 /*
 author          Oliver Blaser
-date            28.02.2025
+date            01.03.2025
 copyright       MIT - Copyright (c) 2025 Oliver Blaser
 */
 
 #include <cstddef>
 #include <cstdint>
-#include <ctime>
-#include <queue>
 #include <random>
 #include <string>
-#include <vector>
 
 #include "curl.h"
+#include "thread.h"
+#include "types.h"
 
 #define CURL_NO_OLDIES
 #define CURL_STATICLIB
 #include <curl/curl.h>
 
+#ifdef _WIN32
+#include <Windows.h>
+#else
+#include <unistd.h>
+#endif
+
+
+#if defined(_MSC_VER)
+#define CPPSTD (_MSVC_LANG)
+#else
+#define CPPSTD (__cplusplus)
+#endif
+#define CPPSTD_98 (199711L)
+#define CPPSTD_11 (201103L)
+#define CPPSTD_14 (201402L)
+#define CPPSTD_17 (201703L)
+#define CPPSTD_20 (202002L)
+
+#if (CPPSTD > CPPSTD_11)
+#define CONSTEXPR constexpr
+#else
+#define CONSTEXPR const
+#endif
+
+
+namespace util {
+
+CONSTEXPR size_t strlen(const char* str)
+{
+    size_t len = 0;
+    while (*(str + len) != 0) { ++len; }
+    return len;
+}
+
+/**
+ * Errors like `EINTR` are not handled.
+ *
+ * Values out of the specified range are clamped. On Windows the value is clamped to a minimum of 1ms, and rounded to a
+ * multiple of 1ms in such a way that speed is more important than accurate or binary rounding.
+ *
+ * @param t_us Time to sleep as nanoseconds, must be in the range [0, 999999]
+ */
+void sleep(int t_us)
+{
+    if (t_us > 999999) { t_us = 999999; }
+
+#ifdef _WIN32
+
+    if (t_us < 1000) { t_us = 1000; }
+
+    // round at 3/4 (normal rounding would be done at 1/2), this could potentially lead to a value out of the specified
+    // range, but this doesn't matter on Windows
+    t_us += 250;
+
+    const DWORD t_ms = (DWORD)(t_us / 1000);
+    Sleep(t_ms);
+
+#else
+
+    if (t_us < 0) { t_us = 0; }
+
+    struct timespec dur;
+    dur.tv_sec = 0;
+    dur.tv_nsec = t_us * 1000;
+    nanosleep(&dur, nullptr);
+
+#endif
+}
+
+} // namespace util
 
 namespace {
 
 enum STATE
 {
     S_init = 0,
-    S_booting,
+    S_boot,
     S_shutdown,
     S_halted,
 
@@ -35,358 +104,78 @@ enum STATE
     S__end_
 };
 
-size_t curlWriteFunction(char* p, size_t size, size_t nmemb, void* pClientData)
-{
-    size_t effSize = size * nmemb;
-    for (size_t i = 0; i < effSize; ++i) { static_cast<std::string*>(pClientData)->push_back(*(p + i)); }
-    return effSize;
-}
-
 } // namespace
 
 
 
-/*
+static size_t transfer_write(char* p, size_t size, size_t nmemb, void* pClientData);
 
-new nice stuff
-########################################################################################################################
-old stuff from v2.x
 
-*/
 
-
-#if defined(_DEBUG) && 0
-#define CURLTH_print_queueId_vector_DEBUG (1) // def/undef
-#endif
-
-
-
-std::string curl::HeaderField::key() const
-{
-    std::string r;
-
-    if (m_data.find(": ") < m_data.length())
-    {
-#if (OMW_VERSION_ID <= OMW_VERSION_ID_0_2_1_ALPHA)
-        r = omw::string(m_data).split(':', 2)[0];
-#else
-        r = omw::split(m_data, ':', 2)[0];
-#endif
-    }
-    else r = m_data;
-
-    return r;
-}
-
-std::string curl::HeaderField::value() const
-{
-    std::string r;
-
-    if (m_data.find(": ") < m_data.length())
-    {
-#if OMW_VERSION_ID <= OMW_VERSION_ID_0_2_1_ALPHA
-        r = omw::string(m_data).split(':', 2)[1].substr(1);
-#else
-        r = omw::split(m_data, ':', 2)[1].substr(1);
-#endif
-    }
-
-    return r;
-}
-
-const char* const curl::Request::defaultUserAgent = "libcurl";
-
-std::string curl::Request::toString(bool sgrEnable) const
-{
-    std::string str = curl::toString(m_method);
-
-    str += " " + m_url;
-    str += " " + std::to_string(m_timeoutConn);
-    str += " " + std::to_string(m_timeout);
-    str += " \"" + m_userAgent + "\"";
-    str += " (" + std::to_string(m_queueId) + ")";
-
-    if (m_hasBody)
-    {
-        if (sgrEnable) str += "\n\033[90m";
-        else str += " ";
-        str += m_body;
-        if (sgrEnable) str += "\033[39m";
-    }
-
-    return str;
-}
-
-
-
-std::string curl::toString(const curl::Request::Method& method)
-{
-    std::string str;
-
-    switch (method)
-    {
-    case curl::Request::Method::GET:
-        str = "GET";
-        break;
-
-    case curl::Request::Method::POST:
-        str = "POST";
-        break;
-    }
-
-    return str;
-}
-
-
-
-curl::Response::Response(int curlCode, int httpCode, const std::string& body)
-    : m_curlCode(curlCode), m_httpCode(httpCode), m_body(body)
-{}
-
-bool curl::Response::aborted() const { return (m_curlCode == CURLE_ABORTED_BY_CALLBACK); }
-
-bool curl::Response::curlOk() const { return (m_curlCode == CURLE_OK); }
-
-bool curl::Response::httpOk() const { return (m_httpCode == 200); }
-
-std::string curl::Response::toString() const
-{
-    std::string str = std::to_string(m_curlCode);
-    if (m_curlCode != CURLE_OK) str += " " + std::string(curl_easy_strerror((CURLcode)m_curlCode));
-    str += " - " + std::to_string(m_httpCode) + " - " + m_body;
-    return str;
-}
-
-std::string curl::Response::toString_noBody() const
-{
-    std::string str = std::to_string(m_curlCode);
-    if (m_curlCode != CURLE_OK) str += " " + std::string(curl_easy_strerror((CURLcode)m_curlCode));
-    str += " - " + std::to_string(m_httpCode);
-    return str;
-}
-
-
-
-int curl::ThreadSharedData::queueReq(const curl::Request& req, bool priority)
-{
-    lock_guard lg(m_mtx);
-
-    curl::Request tmp = req;
-    const int id = m_getNewQueueId();
-    tmp.setQueueId(id);
-
-    m_queueId.push_back(id);
-
-    if (priority) m_queuePrio.push(tmp);
-    else m_queue.push(tmp);
-
-    return id;
-}
-
-int curl::ThreadSharedData::queueReqMaxPrio(const curl::Request& req)
-{
-    lock_guard lg(m_mtx);
-
-    curl::Request tmp = req;
-    const int id = m_getNewQueueId();
-    tmp.setQueueId(id);
-
-    m_queueId.push_back(id);
-
-    m_queuePrioMax.push(tmp);
-
-    return id;
-}
-
-curl::Response curl::ThreadSharedData::getRes()
-{
-    lock_guard lg(m_mtx);
-    m_rmQueueId(m_responseId);
-    m_responseId = (-1);
-    return m_response;
-}
-
-curl::Request curl::ThreadSharedData::popReq()
-{
-    lock_guard lg(m_mtx);
-
-    curl::Request r;
-
-    if (!m_queuePrioMax.empty())
-    {
-        r = m_queuePrioMax.front();
-        m_queuePrioMax.pop();
-    }
-    else if (!m_queuePrio.empty())
-    {
-        r = m_queuePrio.front();
-        m_queuePrio.pop();
-    }
-    else if (!m_queue.empty())
-    {
-        r = m_queue.front();
-        m_queue.pop();
-    }
-
-#if defined(PRJ_DEBUG) && (defined(CURLTH_print_queueId_vector_DEBUG) || 0)
-    LOG_DBG(); // std::cout << OMW__FILENAME__ << "(" << __func__ << "):" << __LINE__ << "\n    " << r.toString() << std::endl;
-#endif
-
-    return r;
-}
-
-void curl::ThreadSharedData::m_rmQueueId(int id)
-{
-#ifdef CURLTH_print_queueId_vector_DEBUG
-    LOG_DBG();
-    if (app::cliargs.containsVerbose())
-    {
-        std::cout << OMW__FILENAME__ << "(" << __func__ << "):" << __LINE__ << "\n    id: " << id << "\n    ";
-        std::cout << "m_queueId: [";
-        for (size_t i = 0; i < m_queueId.size(); ++i) { std::cout << " " << m_queueId[i]; }
-        if (m_queueId.size() > 0) std::cout << " ";
-        std::cout << "]" << std::endl;
-    }
-#endif
-
-#if 0
-    bool proc;
-
-    do
-    {
-        proc = false;
-
-        for (size_t i = 0; (i < m_queueId.size()) && !proc; ++i)
-        {
-            if (m_queueId[i] == id)
-            {
-                proc = true;
-                m_queueId.erase(m_queueId.begin() + i);
-            }
-        }
-    }
-    while (proc);
-#else
-    for (size_t i = 0; i < m_queueId.size(); ++i)
-    {
-        if (m_queueId[i] == id)
-        {
-            m_queueId.erase(m_queueId.begin() + i);
-            --i;
-        }
-    }
-#endif
-
-#ifdef CURLTH_print_queueId_vector_DEBUG
-    LOG_DBG();
-    if (app::cliargs.containsVerbose())
-    {
-        std::cout << "    m_queueId: [";
-        for (size_t i = 0; i < m_queueId.size(); ++i) { std::cout << " " << m_queueId[i]; }
-        if (m_queueId.size() > 0) std::cout << " ";
-        std::cout << "]" << std::endl;
-    }
-#endif
-}
-
-int curl::ThreadSharedData::m_getNewQueueId()
-{
-    int id = 1;
-    bool used;
-
-    // this implementation always returns a valid request ID, if this behaviour is changed CURLTHREAD_VERSION_MAJ has to increase
-
-    do {
-        used = false;
-
-        for (size_t i = 0; (i < m_queueId.size()) && !used; ++i)
-        {
-            if (m_queueId[i] == id)
-            {
-                used = true;
-                ++id;
-            }
-        }
-    }
-    while (used);
-
-    if ((id > 100) || (id < 0)) { LOG_WRN("new queue ID: %i", id); }
-
-    return id;
-}
-
-
-
-curl::ThreadSharedData curl::sd = curl::ThreadSharedData();
-
-
+curl::ThreadSharedData curl::sharedData; // implicitly calls the default constructor
 
 void curl::thread()
 {
     int state = S_init;
+    int threadSleep_us = 500;
+    curl::ThreadSharedData::Request request;
 
-    useconds_t threadSleep_us = 200;
-
-    curl::Request request;
-    curl::Response response;
-
-    while (!sd.testTerminate())
+    while (!sharedData.doTerminate())
     {
-#if LOG_MODULE_LEVEL >= LOG_LEVEL_DBG
-        static int oldState = -1;
-        if (oldState != state)
-        {
-            LOG_DBG("%s state %i -> %i", ___LOG_STR(LOG_MODULE_NAME), oldState, state);
-
-            oldState = state;
-        }
-#endif
-
         switch (state)
         {
         case S_init:
-            sd.setRes(curl::Response(), (-1));
-            state = S_booting;
+            // no need to init `request` or `ThreadSharedData::m_response`, default contructors set an invalid queue ID
+            state = S_boot;
             break;
 
-        case S_booting:
+        case S_boot:
         {
             CURLcode curl_res = curl_global_init(CURL_GLOBAL_DEFAULT);
 
             if (curl_res == CURLE_OK)
             {
-                sd.setBooted(true);
+                sharedData.setBooted(true);
                 state = S_idle;
             }
             else
             {
-                LOG_ERR("curl_global_init() returned %i", (int)curl_res);
+                // LOG_ERR("curl_global_init() returned %i", (int)curl_res);
                 state = S_halted;
             }
         }
         break;
 
+        case S_shutdown:
+            if (sharedData.booted()) { curl_global_cleanup(); }
+            sharedData.setBooted(false);
+            state = S_halted;
+            break;
+
+        case S_halted:
+            sharedData.terminate();
+            break;
+
+
+
         case S_idle:
-            threadSleep_us = 1000;
 
-            if (!sd.isQueueEmpty())
+            request = sharedData.popRequest();
+
+            if (request.queueId().isValid())
             {
+                state = S_request;
                 threadSleep_us = 200;
-                request = sd.popReq();
-                state = S_sendRequest;
-
-#if defined(PRJ_DEBUG) && defined(CURL_PRINT_REQRES)
-                LOG_DBG(); // util::print("\033[96mcURL request:\033[39m " + request.toString() + "\n");
-#endif
             }
+            else { threadSleep_us = 50 * 1000; }
 
-            if (sd.testShutdown()) { state = S_shutdown; }
+            if (sharedData.doShutdown()) { state = S_shutdown; }
 
             break;
 
-        case S_sendRequest:
+        case S_request:
         {
-            response = curl::Response(-1, -1, "curl_easy_init() failed");
+            curl::Response response = curl::Response(-1, -1, "curl_easy_init() failed");
 
             CURL* curl = curl_easy_init();
 
@@ -395,16 +184,21 @@ void curl::thread()
                 curl_easy_setopt(curl, CURLOPT_URL, request.url().c_str());
                 curl_easy_setopt(curl, CURLOPT_USERAGENT, request.userAgent().c_str());
 
-                curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, request.timeoutConn());
-                curl_easy_setopt(curl, CURLOPT_TIMEOUT, request.timeout());
+                curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, request.connectTimeout());
+                curl_easy_setopt(curl, CURLOPT_TIMEOUT, request.totalTimeout());
 
                 curl_slist* headerList = nullptr;
 
-                if (request.hasHeader())
+                if (!request.header().empty())
                 {
                     for (size_t i = 0; i < request.header().size(); ++i)
                     {
-                        if (!request.header()[i].empty()) headerList = curl_slist_append(headerList, request.header()[i].toCurlStr());
+                        const auto& tmp = request.header()[i];
+                        if (!tmp.empty())
+                        {
+                            // the src string is copied, and thus could be freed after this call
+                            headerList = curl_slist_append(headerList, tmp.curlStr());
+                        }
                     }
 
                     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
@@ -412,59 +206,42 @@ void curl::thread()
 
                 switch (request.method())
                 {
-                case Request::Method::GET:
-                    (void)0; // nop
-                    if (request.hasBody()) { LOG_WRN("ignoring body of GET request"); }
+                case curl::Method::GET:
+                    (void)0; // nop, ignoring body of GET request
                     break;
 
-                case Request::Method::POST:
+                case curl::Method::POST:
                     curl_easy_setopt(curl, CURLOPT_POST, 1L);
-                    if (request.hasBody()) { curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request.body().c_str()); }
+                    if (!request.body().empty())
+                    {
+                        // does not copy the data, the memory pointed to has to stay allocated until the transfer finishes
+                        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request.body().c_str());
+                    }
                     break;
                 }
 
                 std::string resBody;
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteFunction);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, transfer_write);
                 curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resBody);
 
-                CURLcode res;
-                res = curl_easy_perform(curl);
+                const CURLcode curlCode = curl_easy_perform(curl);
 
-                long resCode;
-                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resCode);
+                long httpCode;
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
 
-                response = curl::Response(res, resCode, resBody);
+                response = curl::Response((int)curlCode, (int)httpCode, resBody);
 
                 curl_slist_free_all(headerList);
                 curl_easy_cleanup(curl);
             }
 
-            state = S_processRequest;
-
-#if defined(PRJ_DEBUG) && defined(CURL_PRINT_REQRES)
-            LOG_DBG(); // util::print("\033[96m \\--cURL response:\033[39m " + response.toString() + "\n");
-#endif
+            sharedData.setResponse(response, request.queueId());
+            state = S_awaitResponsePop;
         }
         break;
 
-        case S_processRequest:
-            sd.setRes(response, request.queueId());
-            state = S_awaitResponseTaken;
-            break;
-
-        case S_awaitResponseTaken:
-            if (sd.getResId() < 0) { state = S_idle; }
-            break;
-
-        case S_shutdown:
-            LOG_INF("shutdown");
-            if (sd.isBooted()) { curl_global_cleanup(); }
-            sd.setBooted(false);
-            state = S_halted;
-            break;
-
-        case S_halted:
-            sd.terminate();
+        case S_awaitResponsePop:
+            if (!sharedData.getResponseQueueId().isValid()) { state = S_idle; }
             break;
 
         default:
@@ -472,21 +249,322 @@ void curl::thread()
             break;
         }
 
-        usleep(threadSleep_us);
+        util::sleep(threadSleep_us);
 
     } // while !terminate
 
-    LOG_DBG("exit");
+    // LOG_DBG("terminated");
 }
 
-time_t curl::getReqInterval(const time_t& min, const time_t& max)
+
+
+size_t transfer_write(char* p, size_t size, size_t nmemb, void* pClientData)
+{
+    size_t effSize = size * nmemb;
+    for (size_t i = 0; i < effSize; ++i) { static_cast<std::string*>(pClientData)->push_back(*(p + i)); }
+    return effSize;
+}
+
+
+
+//======================================================================================================================
+// curl.h implementation
+
+
+
+#if CURLTHREAD_DEBUG_print_queueId_vector
+#include <iostream>
+using std::cout;
+using std::endl;
+#endif
+
+
+
+curl::QueueId curl::ThreadSharedData::queueRequest(const curl::Request& req, const curl::Priority& priority)
+{
+    lock_guard lg(m_mtx);
+
+    curl::QueueId id = m_getNewQueueId();
+
+    if (id.isValid())
+    {
+        const ThreadSharedData::Request tmp(req, id);
+
+        try
+        {
+            m_queueId.push_back(id);
+
+            switch (priority)
+            {
+            case Priority::normal:
+                m_qNormal.push(tmp);
+                break;
+
+            case Priority::high:
+                m_qHigh.push(tmp);
+                break;
+
+            case Priority::max:
+                m_qMax.push(tmp);
+                break;
+            }
+        }
+        catch (...)
+        {
+            m_rmQueueId(id);
+            id = QueueId::FAILED;
+        }
+    }
+
+    return id;
+}
+
+curl::Response curl::ThreadSharedData::popResponse(const curl::QueueId& queueId)
+{
+    lock_guard lg(m_mtx);
+
+    curl::Response res;
+
+    if (queueId == m_response.queueId())
+    {
+        m_rmQueueId(queueId);
+        res = m_response;
+        m_response.clear();
+    }
+    // else nop, default constructor creates an invalid response
+
+    return res;
+}
+
+/**
+ * Removes the `id` from `m_queueId`. If `id` is not found `m_queueId` is unchanged.
+ */
+void curl::ThreadSharedData::m_rmQueueId(curl::QueueId::id_type id)
+{
+#if CURLTHREAD_DEBUG_print_queueId_vector
+    // LOG_DBG();
+    auto print_queueId_vector = [&]() {
+        cout << "    m_queueId: [";
+        for (size_t i = 0; i < m_queueId.size(); ++i) { cout << " " << m_queueId[i]; }
+        if (m_queueId.size() > 0) { cout << " "; }
+        cout << "]";
+    };
+    cout << "\033[90m";
+    cout << "CURLTHREAD " << __func__ << ":" << __LINE__ << "\n    id: " << id << "\n";
+    print_queueId_vector();
+    cout << "\033[39m" << endl;
+#endif
+
+    for (size_t i = 0; i < m_queueId.size(); ++i)
+    {
+        if (m_queueId[i] == id)
+        {
+            m_queueId.erase(m_queueId.begin() + i);
+            --i;
+        }
+    }
+
+#if CURLTHREAD_DEBUG_print_queueId_vector
+    // LOG_DBG();
+    cout << "\033[90m";
+    print_queueId_vector();
+    cout << "\033[39m" << endl;
+#endif
+}
+
+/**
+ * Returnes an unused ID in range [`curl::QueueId::BASE`, `curl::QueueId::MAX`] or `curl::QueueId::FAILED`.
+ */
+curl::QueueId curl::ThreadSharedData::m_getNewQueueId()
+{
+    static_assert((curl::QueueId::BASE > 0) &&                             // see curl::QueueId::isValid()
+                      (curl::QueueId::MAX <= INT16_MAX) &&                 // the latter two ensure that the doc of this
+                      (sizeof(curl::QueueId::id_type) >= sizeof(int16_t)), // func is true on all possible platormfms
+                  "see comments");
+
+
+    curl::QueueId::id_type id = curl::QueueId::BASE;
+    bool used;
+
+    do {
+        used = false;
+
+        for (size_t i = 0; (i < m_queueId.size()) && !used; ++i)
+        {
+            if (m_queueId[i] == id)
+            {
+                if (id < curl::QueueId::MAX)
+                {
+                    used = true;
+                    ++id;
+                }
+                else
+                {
+                    id = curl::QueueId::FAILED;
+                    used = false;
+                }
+            }
+        }
+    }
+    while (used);
+
+    // if ((id > 100) || (id < 0)) { LOG_WRN("new queue ID: %i", id); }
+
+    return id;
+}
+
+curl::ThreadSharedData::Request curl::ThreadSharedData::popRequest()
+{
+    lock_guard lg(m_mtx);
+
+    curl::ThreadSharedData::Request r;
+
+    if (!m_qMax.empty())
+    {
+        r = m_qMax.front();
+        m_qMax.pop();
+    }
+    else if (!m_qHigh.empty())
+    {
+        r = m_qHigh.front();
+        m_qHigh.pop();
+    }
+    else if (!m_qNormal.empty())
+    {
+        r = m_qNormal.front();
+        m_qNormal.pop();
+    }
+    else { r.clear(); }
+
+    return r;
+}
+
+
+
+std::string curl::toString(const Method& method)
+{
+    std::string str;
+
+    switch (method)
+    {
+    case curl::Method::GET:
+        str = "GET";
+        break;
+
+    case curl::Method::POST:
+        str = "POST";
+        break;
+    }
+
+    return str;
+}
+
+std::string curl::toString(const Priority& priority)
+{
+    std::string str;
+
+    switch (priority)
+    {
+    case curl::Priority::normal:
+        str = "normal";
+        break;
+
+    case curl::Priority::high:
+        str = "high";
+        break;
+
+    case curl::Priority::max:
+        str = "max";
+        break;
+    }
+
+    return str;
+}
+
+int curl::random(int min, int max)
 {
     std::random_device rd;
     std::mt19937 gen(rd());
+
+    static_assert(sizeof(int) == sizeof(int32_t), "types might need to be changed here");
     std::uniform_int_distribution<int32_t> distrib(0, INT32_MAX);
     auto rand_i32 = [&gen, &distrib]() { return distrib(gen); };
 
-    const time_t span = (max - min) + 1;
+    const int span = (max - min) + 1;
 
-    return min + (((time_t)rand_i32()) % span);
+    return ((span > 0) ? (min + (((int)rand_i32()) % span)) : min);
+}
+
+
+
+// curl.h implementation
+//======================================================================================================================
+// types.h implementation
+
+
+
+const char* const curl::HeaderField::delimiter = ": ";
+
+std::string curl::HeaderField::key() const
+{
+    const size_t delimiterPos = m_curlStr.find(delimiter);
+    return m_curlStr.substr(0, delimiterPos);
+}
+
+std::string curl::HeaderField::value() const
+{
+    const size_t delimiterPos = m_curlStr.find(delimiter);
+    CONSTEXPR size_t delimiterLength = util::strlen(delimiter);
+    return m_curlStr.substr(delimiterPos + delimiterLength);
+}
+
+
+
+const char* const curl::Request::defaultUserAgent = "libcurl";
+
+std::string curl::Request::toString() const
+{
+    std::string str = curl::toString(m_method);
+
+    str += " " + m_url;
+    str += " " + std::to_string(m_connectTimeout);
+    str += " " + std::to_string(m_totalTimeout);
+    str += " \"" + m_userAgent + "\"";
+    // str += " (" + std::to_string(m_queueId) + ")";
+
+    if (!m_body.empty()) { str += " " + m_body; }
+
+    return str;
+}
+
+
+
+bool curl::Response::aborted() const { return (m_curlCode == CURLE_ABORTED_BY_CALLBACK); }
+bool curl::Response::curlOk() const { return (m_curlCode == CURLE_OK); }
+
+std::string curl::Response::toString() const
+{
+    std::string str = toString_noBody();
+
+    if (!m_body.empty()) { str += " - " + m_body; }
+
+    return str;
+}
+
+std::string curl::Response::toString_noBody() const
+{
+    std::string str = std::to_string(m_curlCode);
+
+    if (m_curlCode != CURLE_OK) { str += " " + std::string(curl_easy_strerror((CURLcode)m_curlCode)); }
+
+    str += " - " + std::to_string(m_httpCode);
+
+    return str;
+}
+
+void curl::Response::m_clear()
+{
+    m_curlCode = (-1);
+    m_httpCode = (-1);
+    m_body = std::string();
 }

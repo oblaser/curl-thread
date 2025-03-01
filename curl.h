@@ -1,15 +1,19 @@
 /*
 author          Oliver Blaser
-date            28.02.2025
+date            01.03.2025
 copyright       MIT - Copyright (c) 2025 Oliver Blaser
 */
 
 #ifndef IG_CURLTHREAD_CURL_H
 #define IG_CURLTHREAD_CURL_H
 
+#include <cstdint>
+#include <queue>
 #include <string>
+#include <vector>
 
 #include "thread.h"
+#include "types.h"
 
 
 #define CURLTHREAD_VERSION_MAJ (3)
@@ -17,253 +21,146 @@ copyright       MIT - Copyright (c) 2025 Oliver Blaser
 #define CURLTHREAD_VERSION_PAT (0)
 
 
-namespace curl {
-
-enum class Method
-{
-    GET = 0,
-    POST,
-};
-
-class HeaderField
-{
-public:
-    HeaderField() = delete;
-
-    HeaderField(const std::string& key, const std::string& value)
-        : m_data(key + ": " + value)
-    {}
-
-    virtual ~HeaderField() {}
-
-    bool empty() const { return m_data.empty(); }
-
-    std::string key() const;
-    std::string value() const;
-
-    const char* toCurlStr() const { return m_data.c_str(); }
-
-private:
-    std::string m_data;
-};
-
-} // namespace curl
-
-
-
-/*
-
-new nice stuff
-########################################################################################################################
-old stuff from v2.x
-
-*/
-
-
-
-#include <cstddef>
-#include <cstdint>
-#include <ctime>
-#include <queue>
-#include <string>
-#include <vector>
-
-
-namespace curl {
-
 /**
- * For info about the timeouts see [`CURLOPT_TIMEOUT`](https://curl.se/libcurl/c/CURLOPT_TIMEOUT.html) and
- * [`CURLOPT_CONNECTTIMEOUT`](https://curl.se/libcurl/c/CURLOPT_CONNECTTIMEOUT.html).
- * `CURLOPT_TIMEOUT` is the total timeout in seconds. If `CURLOPT_CONNECTTIMEOUT` = `CURLOPT_TIMEOUT` there might be no time left for the data transfer.
+ * @brief Thread safe wrapper for the `curl_easy_..()` interface.
+ *
+ * \section curl_timeouts Timeouts
+ * `CURLOPT_TIMEOUT` is the total (connection + data transfer) timeout in seconds. If `CURLOPT_CONNECTTIMEOUT` = `CURLOPT_TIMEOUT` there might be no or not
+ * enough time left for the data transfer.
+ * - [`CURLOPT_TIMEOUT`](https://curl.se/libcurl/c/CURLOPT_TIMEOUT.html)
+ * - [`CURLOPT_CONNECTTIMEOUT`](https://curl.se/libcurl/c/CURLOPT_CONNECTTIMEOUT.html)
  */
-class Request
+namespace curl {
+
+class ThreadSharedData : public thread::ThreadCtl
 {
 public:
-    static const char* const defaultUserAgent;
-
-public:
-    Request()
-        : m_method(Method::GET),
-          m_url(),
-          m_timeoutConn(0),
-          m_timeout(0),
-          m_userAgent(defaultUserAgent),
-          m_hasBody(false),
-          m_body(),
-          m_header(),
-          m_queueId(-1668641388)
-    {}
-
-    // GET request
-    Request(const std::string& url, long timeoutConn = 0, long timeout = 0, const std::string& userAgent = defaultUserAgent)
-        : m_method(Method::GET),
-          m_url(url),
-          m_timeoutConn(timeoutConn),
-          m_timeout(timeout),
-          m_userAgent(userAgent),
-          m_hasBody(false),
-          m_body(),
-          m_header(),
-          m_queueId(-1668641388)
-    {}
-
-    Request(Method method, const std::string& url, long timeoutConn = 0, long timeout = 0, const std::string& userAgent = defaultUserAgent)
-        : m_method(method),
-          m_url(url),
-          m_timeoutConn(timeoutConn),
-          m_timeout(timeout),
-          m_userAgent(userAgent),
-          m_hasBody(false),
-          m_body(),
-          m_header(),
-          m_queueId(-1668641388)
-    {}
-
-    virtual ~Request() {}
-
-    Method method() const { return m_method; }
-    const std::string& url() const { return m_url; }
-    long timeoutConn() const { return m_timeoutConn; }
-    long timeout() const { return m_timeout; }
-    const std::string& userAgent() const { return m_userAgent; }
-    bool hasBody() const { return m_hasBody; }
-    const std::string& body() const { return m_body; }
-    bool hasHeader() const { return !m_header.empty(); }
-    const std::vector<HeaderField>& header() const { return m_header; }
-
-    void setBody(const std::string& body)
+    class QueueItem
     {
-        m_hasBody = true;
-        m_body = body;
-    }
+    public:
+        QueueItem() = delete;
 
-    void setHeader(const std::vector<HeaderField>& header) { m_header = header; }
-    void addHeader(const HeaderField& headerField) { m_header.push_back(headerField); }
+        explicit QueueItem(const QueueId& queueId)
+            : m_queueId(queueId)
+        {}
 
-    int queueId() const { return m_queueId; }
-    void setQueueId(int id) { m_queueId = id; }
+        virtual ~QueueItem() {}
 
-    std::string toString(bool sgrEnable = false) const;
+        virtual void clear() { m_queueId = QueueId::NONE; }
 
-private:
-    Method m_method;
-    std::string m_url;
-    long m_timeoutConn;
-    long m_timeout;
-    std::string m_userAgent;
-    bool m_hasBody;
-    std::string m_body;
-    std::vector<HeaderField> m_header;
+        const QueueId& queueId() const { return m_queueId; }
 
-    int m_queueId;
-};
+    private:
+        QueueId m_queueId;
+    };
 
-std::string toString(const Request::Method& method);
+    class Request : public curl::Request,
+                    public ThreadSharedData::QueueItem
+    {
+    public:
+        Request()
+            : curl::Request(Method::GET, ""), ThreadSharedData::QueueItem(QueueId::NONE)
+        {}
 
-class Response
-{
-public:
-    Response()
-        : m_curlCode(-1), m_httpCode(-1), m_body()
-    {}
+        Request(const curl::Request& other, const QueueId& queueId)
+            : curl::Request(other), ThreadSharedData::QueueItem(queueId)
+        {}
 
-    Response(int curlCode, int httpCode, const std::string& body);
+        virtual ~Request() {}
+    };
 
-    virtual ~Response() {}
+    class Response : public curl::Response,
+                     public ThreadSharedData::QueueItem
+    {
+    public:
+        Response()
+            : curl::Response(), ThreadSharedData::QueueItem(QueueId::NONE)
+        {}
 
-    int curlCode() const { return m_curlCode; }
-    int httpCode() const { return m_httpCode; }
-    const std::string& body() const { return m_body; }
+        Response(const curl::Response& other, const QueueId& queueId)
+            : curl::Response(other), ThreadSharedData::QueueItem(queueId)
+        {}
 
-    bool aborted() const;
-    bool curlOk() const; // curlCode == CURLE_OK (0)
-    bool httpOk() const; // httpCode == 200
-    bool good() const { return (curlOk() && httpOk()); }
+        virtual ~Response() {}
 
-    std::string toString() const;
-    std::string toString_noBody() const;
+        virtual void clear()
+        {
+            ThreadSharedData::QueueItem::clear();
+            curl::Response::m_clear();
+        }
+    };
 
-private:
-    int m_curlCode;
-    int m_httpCode;
-    std::string m_body;
-};
 
-class ThreadSharedData : public thread::SharedData
-{
+
 public:
     ThreadSharedData()
-        : m_shutdown(false), m_queue(), m_queuePrio(), m_queuePrioMax(), m_queueId(), m_response(), m_responseId(-1)
+        : thread::ThreadCtl()
     {}
+
     virtual ~ThreadSharedData() {}
 
+
     // clang-format off
-    void shutdown(bool state = true) { lock_guard lg(m_mtx); m_shutdown = state; }
-    bool testShutdown() const { lock_guard lg(m_mtx); return m_shutdown; }
+    curl::QueueId queueRequest(const curl::Request& req, const curl::Priority& priority);
+    bool isResponseReady(const curl::QueueId& queueId) const { lock_guard lg(m_mtx); return (queueId == m_response.queueId()); }
+    curl::Response popResponse(const curl::QueueId& queueId);
+
+    size_t getQNormalSize() const { lock_guard lg(m_mtx); return m_qNormal.size(); }
+    size_t getQHighSize() const { lock_guard lg(m_mtx); return m_qHigh.size(); }
+    size_t getQMaxSize() const { lock_guard lg(m_mtx); return m_qMax.size(); }
     // clang-format on
 
 
-
-    // extern
-public:
-    int queueReq(const curl::Request& req, bool priority = false); // returns the queue id of the request
-    int queueReqMaxPrio(const curl::Request& req);                 // returns the queue id of the request
-    int getResId() const
-    {
-        lock_guard lg(m_mtx);
-        return m_responseId;
-    }
-
-    curl::Response getRes();
-
-    bool isQueuePrioMaxEmpty() const
-    {
-        lock_guard lg(m_mtx);
-        return (m_queuePrioMax.empty());
-    }
-
-
-
-    // intern
-public:
-    bool isQueueEmpty() const
-    {
-        lock_guard lg(m_mtx);
-        return (m_queue.empty() && m_queuePrio.empty() && m_queuePrioMax.empty());
-    }
-
-    curl::Request popReq();
-
-    void setRes(const curl::Response& res, int id)
-    {
-        lock_guard lg(m_mtx);
-        m_response = res;
-        m_responseId = id;
-    }
-
 private:
-    bool m_shutdown;
+    std::queue<ThreadSharedData::Request> m_qNormal;
+    std::queue<ThreadSharedData::Request> m_qHigh;
+    std::queue<ThreadSharedData::Request> m_qMax;
+    std::vector<curl::QueueId::id_type> m_queueId;
 
-    std::queue<curl::Request> m_queue;
-    std::queue<curl::Request> m_queuePrio;
-    std::queue<curl::Request> m_queuePrioMax;
-    std::vector<int> m_queueId;
+    ThreadSharedData::Response m_response;
 
-    curl::Response m_response;
-    int m_responseId;
+    void m_rmQueueId(curl::QueueId::id_type id);
+    curl::QueueId m_getNewQueueId();
 
-    void m_rmQueueId(int id);
-    int m_getNewQueueId();
+
+public:
+    // thread intern
+
+    // clang-format off
+    ThreadSharedData::Request popRequest();
+    void setResponse(const curl::Response& res, const QueueId& queueId) { lock_guard lg(m_mtx); m_response = Response(res, queueId); }
+    QueueId getResponseQueueId() const { lock_guard lg(m_mtx); return m_response.queueId(); }
+    // clang-format on
 };
 
-extern ThreadSharedData sd;
+
+
+extern ThreadSharedData sharedData;
 
 void thread();
 
+static inline curl::QueueId queueRequest(const curl::Request& req, const curl::Priority& priority) { return sharedData.queueRequest(req, priority); }
+static inline bool isResponseReady(const curl::QueueId& queueId) { return sharedData.isResponseReady(queueId); }
+static inline curl::Response popResponse(const curl::QueueId& queueId) { return sharedData.popResponse(queueId); }
+
+
+
+//! \name Utility
+/// @{
+
+std::string toString(const Method& method);
+std::string toString(const Priority& priority);
+
 /**
- * @brief Get a random interval in range [min, max].
+ * @brief Get a random integer in range [min, max].
+ *
+ * Can be used for e.g. randomised intervals.
+ *
+ * The result is undefined if `min` > `max` or if any of the arguments is negative.
  */
-time_t random(time_t min, time_t max);
+int random(int min, int max);
+
+/// @}
 
 } // namespace curl
 

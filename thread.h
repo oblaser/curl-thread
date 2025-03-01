@@ -23,6 +23,11 @@ public:
 
 protected:
     mutable std::mutex m_mtx;
+
+private:
+    SharedData(const SharedData& other) = delete;
+    SharedData(const SharedData&& other) = delete;
+    SharedData& operator=(SharedData& other) = delete;
 };
 
 class ThreadCtl : public SharedData
