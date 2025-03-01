@@ -108,6 +108,7 @@ enum STATE
 
 
 
+static curl::Response perform(CURL* curl, const curl::ThreadSharedData::Request& request);
 static size_t transfer_write(char* p, size_t size, size_t nmemb, void* pClientData);
 
 
@@ -178,60 +179,9 @@ void curl::thread()
             curl::Response response = curl::Response(-1, -1, "curl_easy_init() failed");
 
             CURL* curl = curl_easy_init();
-
             if (curl)
             {
-                curl_easy_setopt(curl, CURLOPT_URL, request.url().c_str());
-                curl_easy_setopt(curl, CURLOPT_USERAGENT, request.userAgent().c_str());
-
-                curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, request.connectTimeout());
-                curl_easy_setopt(curl, CURLOPT_TIMEOUT, request.totalTimeout());
-
-                curl_slist* headerList = nullptr;
-
-                if (!request.header().empty())
-                {
-                    for (size_t i = 0; i < request.header().size(); ++i)
-                    {
-                        const auto& tmp = request.header()[i];
-                        if (!tmp.empty())
-                        {
-                            // the src string is copied, and thus could be freed after this call
-                            headerList = curl_slist_append(headerList, tmp.curlStr());
-                        }
-                    }
-
-                    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
-                }
-
-                switch (request.method())
-                {
-                case curl::Method::GET:
-                    (void)0; // nop, ignoring body of GET request
-                    break;
-
-                case curl::Method::POST:
-                    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-                    if (!request.body().empty())
-                    {
-                        // does not copy the data, the memory pointed to has to stay allocated until the transfer finishes
-                        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request.body().c_str());
-                    }
-                    break;
-                }
-
-                std::string resBody;
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, transfer_write);
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resBody);
-
-                const CURLcode curlCode = curl_easy_perform(curl);
-
-                long httpCode;
-                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-
-                response = curl::Response((int)curlCode, (int)httpCode, resBody);
-
-                curl_slist_free_all(headerList);
+                response = perform(curl, request);
                 curl_easy_cleanup(curl);
             }
 
@@ -257,6 +207,61 @@ void curl::thread()
 }
 
 
+
+curl::Response perform(CURL* curl, const curl::ThreadSharedData::Request& request)
+{
+    curl_easy_setopt(curl, CURLOPT_URL, request.url().c_str());
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, request.userAgent().c_str());
+
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, request.connectTimeout());
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, request.totalTimeout());
+
+    curl_slist* headerList = nullptr;
+
+    if (!request.header().empty())
+    {
+        for (size_t i = 0; i < request.header().size(); ++i)
+        {
+            const auto& tmp = request.header()[i];
+            if (!tmp.empty())
+            {
+                // the src string is copied, and thus could be freed after this call
+                headerList = curl_slist_append(headerList, tmp.curlStr());
+            }
+        }
+
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
+    }
+
+    switch (request.method())
+    {
+    case curl::Method::GET:
+        (void)0; // nop, ignoring body of GET request
+        break;
+
+    case curl::Method::POST:
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        if (!request.body().empty())
+        {
+            // does not copy the data, the memory pointed to has to stay allocated until the transfer finishes
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request.body().c_str());
+        }
+        break;
+    }
+
+    std::string resBody;
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, transfer_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resBody);
+
+    const CURLcode curlCode = curl_easy_perform(curl);
+
+    long httpCode;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+
+    curl_slist_free_all(headerList);
+
+    return curl::Response((int)curlCode, (int)httpCode, resBody);
+}
 
 size_t transfer_write(char* p, size_t size, size_t nmemb, void* pClientData)
 {
