@@ -1,8 +1,4 @@
 
-```sh
-g++ -std=c++11 --pedantic -c -o .vscode/curl.o -Wall -Werror=return-type -Werror=switch -Werror=reorder -Werror=format -Wdouble-promotion curl.cpp
-```
-
 - https://publicapi.dev/
 - https://apipheny.io/free-api/#apis-without-key
 
