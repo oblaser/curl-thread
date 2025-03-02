@@ -35,8 +35,13 @@ public:
     {
         FAILED = -2,
         NONE = -1,
-        BASE = 1,    ///< The first assigned queue id
-        MAX = 32767, ///< The last assigned queue id
+        BASE = 1, ///< The first assigned queue id
+
+#if defined(CURLTHREAD_CONFIG_MAX_QUEUE_ITEMS)
+        MAX = CURLTHREAD_CONFIG_MAX_QUEUE_ITEMS,
+#else
+        MAX = 1024, ///< The last assigned queue id
+#endif
     };
 
     using id_type = int;

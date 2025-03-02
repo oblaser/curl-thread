@@ -42,6 +42,45 @@ copyright       MIT - Copyright (c) 2025 Oliver Blaser
 #endif
 
 
+#ifdef CURLTHREAD_CONFIG_DEBUG_print_queueId_vector
+
+#define DEBUG_print_queueId_vector_before()                                                                                                    \
+    auto print_queueId_vector = [&]() {                                                                                                        \
+        std::string str = "    m_queueId: [";                                                                                                  \
+        for (size_t i = 0; i < m_queueId.size(); ++i) { str += " " + std::to_string(m_queueId[i]); }                                           \
+        if (m_queueId.size() > 0) { str += " "; }                                                                                              \
+        str += "]";                                                                                                                            \
+        return str;                                                                                                                            \
+    };                                                                                                                                         \
+    const bool print_queueId_vector_enable = (m_queueId.size() > 1);                                                                           \
+    if (print_queueId_vector_enable)                                                                                                           \
+    {                                                                                                                                          \
+        std::string queueId_vector_str = "\033[90m";                                                                                           \
+        queueId_vector_str += "CURLTHREAD " + std::string(__func__) + ":" + std::to_string(__LINE__) + "    id: " + std::to_string(id) + "\n"; \
+        queueId_vector_str += print_queueId_vector();                                                                                          \
+        queueId_vector_str += "\033[39m";                                                                                                      \
+        printf("%s\n", queueId_vector_str.c_str());                                                                                            \
+    }                                                                                                                                          \
+    // LOG_DBG();
+
+#define DEBUG_print_queueId_vector_after()            \
+    if (print_queueId_vector_enable)                  \
+    {                                                 \
+        std::string queueId_vector_str = "\033[90m";  \
+        queueId_vector_str += print_queueId_vector(); \
+        queueId_vector_str += "\033[39m";             \
+        printf("%s\n", queueId_vector_str.c_str());   \
+    }                                                 \
+    // LOG_DBG();
+
+#else // CURLTHREAD_CONFIG_DEBUG_print_queueId_vector
+
+#define DEBUG_print_queueId_vector_before() (void)0
+#define DEBUG_print_queueId_vector_after()  (void)0
+
+#endif // CURLTHREAD_CONFIG_DEBUG_print_queueId_vector
+
+
 namespace curl {
 namespace util {
 
@@ -279,7 +318,7 @@ size_t transfer_write(char* p, size_t size, size_t nmemb, void* pClientData)
 
 
 
-#ifdef CURLTHREAD_DEBUG_print_queueId_vector
+#ifdef CURLTHREAD_CONFIG_DEBUG_print_queueId_vector
 #include <iostream>
 using std::cout;
 using std::endl;
@@ -292,6 +331,8 @@ curl::QueueId curl::ThreadSharedData::queueRequest(const curl::Request& req, con
     lock_guard lg(m_mtx);
 
     curl::QueueId id = m_getNewQueueId();
+
+    DEBUG_print_queueId_vector_before();
 
     if (id.isValid())
     {
@@ -323,6 +364,8 @@ curl::QueueId curl::ThreadSharedData::queueRequest(const curl::Request& req, con
         }
     }
 
+    DEBUG_print_queueId_vector_after();
+
     return id;
 }
 
@@ -340,19 +383,7 @@ curl::Response curl::ThreadSharedData::popResponse()
  */
 void curl::ThreadSharedData::m_rmQueueId(curl::QueueId::id_type id)
 {
-#ifdef CURLTHREAD_DEBUG_print_queueId_vector
-    // LOG_DBG();
-    auto print_queueId_vector = [&]() {
-        cout << "    m_queueId: [";
-        for (size_t i = 0; i < m_queueId.size(); ++i) { cout << " " << m_queueId[i]; }
-        if (m_queueId.size() > 0) { cout << " "; }
-        cout << "]";
-    };
-    cout << "\033[90m";
-    cout << "CURLTHREAD " << __func__ << ":" << __LINE__ << "\n    id: " << id << "\n";
-    print_queueId_vector();
-    cout << "\033[39m" << endl;
-#endif
+    DEBUG_print_queueId_vector_before();
 
     for (size_t i = 0; i < m_queueId.size(); ++i)
     {
@@ -363,12 +394,7 @@ void curl::ThreadSharedData::m_rmQueueId(curl::QueueId::id_type id)
         }
     }
 
-#ifdef CURLTHREAD_DEBUG_print_queueId_vector
-    // LOG_DBG();
-    cout << "\033[90m";
-    print_queueId_vector();
-    cout << "\033[39m" << endl;
-#endif
+    DEBUG_print_queueId_vector_after();
 }
 
 /**
