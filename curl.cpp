@@ -329,6 +329,7 @@ curl::QueueId curl::ThreadSharedData::queueRequest(const curl::Request& req, con
 curl::Response curl::ThreadSharedData::popResponse()
 {
     lock_guard lg(m_mtx);
+    m_rmQueueId(m_response.queueId());
     const curl::Response res = m_response;
     m_response.clear();
     return res;
