@@ -42,51 +42,53 @@ copyright       MIT - Copyright (c) 2025 Oliver Blaser
 #endif
 
 
+namespace curl {
 namespace util {
 
-CONSTEXPR size_t strlen(const char* str)
-{
-    size_t len = 0;
-    while (*(str + len) != 0) { ++len; }
-    return len;
-}
+    CONSTEXPR size_t strlen(const char* str)
+    {
+        size_t len = 0;
+        while (*(str + len) != 0) { ++len; }
+        return len;
+    }
 
-/**
- * Errors like `EINTR` are not handled.
- *
- * Values out of the specified range are clamped. On Windows the value is clamped to a minimum of 1ms, and rounded to a
- * multiple of 1ms in such a way that speed is more important than accurate or binary rounding.
- *
- * @param t_us Time to sleep as nanoseconds, must be in the range [0, 999999]
- */
-void sleep(int t_us)
-{
-    if (t_us > 999999) { t_us = 999999; }
+    /**
+     * Errors like `EINTR` are not handled.
+     *
+     * Values out of the specified range are clamped. On Windows the value is clamped to a minimum of 1ms, and rounded to a
+     * multiple of 1ms in such a way that speed is more important than accurate or binary rounding.
+     *
+     * @param t_us Time to sleep as microseconds, must be in the range [0, 999999]
+     */
+    void sleep(int t_us)
+    {
+        if (t_us > 999999) { t_us = 999999; }
 
 #ifdef _WIN32
 
-    if (t_us < 1000) { t_us = 1000; }
+        if (t_us < 1000) { t_us = 1000; }
 
-    // round at 3/4 (normal rounding would be done at 1/2), this could potentially lead to a value out of the specified
-    // range, but this doesn't matter on Windows
-    t_us += 250;
+        // round at 3/4 (normal rounding would be done at 1/2), this could potentially lead to a value out of the specified
+        // range, but this doesn't matter on Windows
+        t_us += 250;
 
-    const DWORD t_ms = (DWORD)(t_us / 1000);
-    Sleep(t_ms);
+        const DWORD t_ms = (DWORD)(t_us / 1000);
+        Sleep(t_ms);
 
 #else
 
-    if (t_us < 0) { t_us = 0; }
+        if (t_us < 0) { t_us = 0; }
 
-    struct timespec dur;
-    dur.tv_sec = 0;
-    dur.tv_nsec = t_us * 1000;
-    nanosleep(&dur, nullptr);
+        struct timespec dur;
+        dur.tv_sec = 0;
+        dur.tv_nsec = t_us * 1000;
+        nanosleep(&dur, nullptr);
 
 #endif
-}
+    }
 
 } // namespace util
+} // namespace curl
 
 namespace {
 
@@ -199,7 +201,7 @@ void curl::thread()
             break;
         }
 
-        util::sleep(threadSleep_us);
+        curl::util::sleep(threadSleep_us);
 
     } // while !terminate
 
@@ -277,7 +279,7 @@ size_t transfer_write(char* p, size_t size, size_t nmemb, void* pClientData)
 
 
 
-#if CURLTHREAD_DEBUG_print_queueId_vector
+#ifdef CURLTHREAD_DEBUG_print_queueId_vector
 #include <iostream>
 using std::cout;
 using std::endl;
@@ -324,20 +326,11 @@ curl::QueueId curl::ThreadSharedData::queueRequest(const curl::Request& req, con
     return id;
 }
 
-curl::Response curl::ThreadSharedData::popResponse(const curl::QueueId& queueId)
+curl::Response curl::ThreadSharedData::popResponse()
 {
     lock_guard lg(m_mtx);
-
-    curl::Response res;
-
-    if (queueId == m_response.queueId())
-    {
-        m_rmQueueId(queueId);
-        res = m_response;
-        m_response.clear();
-    }
-    // else nop, default constructor creates an invalid response
-
+    const curl::Response res = m_response;
+    m_response.clear();
     return res;
 }
 
@@ -346,7 +339,7 @@ curl::Response curl::ThreadSharedData::popResponse(const curl::QueueId& queueId)
  */
 void curl::ThreadSharedData::m_rmQueueId(curl::QueueId::id_type id)
 {
-#if CURLTHREAD_DEBUG_print_queueId_vector
+#ifdef CURLTHREAD_DEBUG_print_queueId_vector
     // LOG_DBG();
     auto print_queueId_vector = [&]() {
         cout << "    m_queueId: [";
@@ -369,7 +362,7 @@ void curl::ThreadSharedData::m_rmQueueId(curl::QueueId::id_type id)
         }
     }
 
-#if CURLTHREAD_DEBUG_print_queueId_vector
+#ifdef CURLTHREAD_DEBUG_print_queueId_vector
     // LOG_DBG();
     cout << "\033[90m";
     print_queueId_vector();
@@ -508,6 +501,30 @@ int curl::random(int min, int max)
 
 
 
+std::string curl::QueueId::toString() const
+{
+    std::string str;
+
+    switch (m_id)
+    {
+    case NONE:
+        str = "NONE (" + std::to_string(m_id) + ")";
+        break;
+
+    case FAILED:
+        str = "FAILED (" + std::to_string(m_id) + ")";
+        break;
+
+    default:
+        str = std::to_string(m_id);
+        break;
+    }
+
+    return str;
+}
+
+
+
 const char* const curl::HeaderField::delimiter = ": ";
 
 std::string curl::HeaderField::key() const
@@ -519,7 +536,7 @@ std::string curl::HeaderField::key() const
 std::string curl::HeaderField::value() const
 {
     const size_t delimiterPos = m_curlStr.find(delimiter);
-    CONSTEXPR size_t delimiterLength = util::strlen(delimiter);
+    CONSTEXPR size_t delimiterLength = curl::util::strlen(delimiter);
     return m_curlStr.substr(delimiterPos + delimiterLength);
 }
 

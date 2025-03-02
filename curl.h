@@ -102,8 +102,8 @@ public:
 
     // clang-format off
     curl::QueueId queueRequest(const curl::Request& req, const curl::Priority& priority);
-    bool isResponseReady(const curl::QueueId& queueId) const { lock_guard lg(m_mtx); return (queueId == m_response.queueId()); }
-    curl::Response popResponse(const curl::QueueId& queueId);
+    bool responseReady(const curl::QueueId& queueId) const { lock_guard lg(m_mtx); return (queueId == m_response.queueId()); }
+    curl::Response popResponse();
 
     size_t getQNormalSize() const { lock_guard lg(m_mtx); return m_qNormal.size(); }
     size_t getQHighSize() const { lock_guard lg(m_mtx); return m_qHigh.size(); }
@@ -139,9 +139,12 @@ extern ThreadSharedData sharedData;
 
 void thread();
 
+static inline bool booted() { return sharedData.booted(); }
+static inline void shutdown() { sharedData.shutdown(); }
+
 static inline curl::QueueId queueRequest(const curl::Request& req, const curl::Priority& priority) { return sharedData.queueRequest(req, priority); }
-static inline bool isResponseReady(const curl::QueueId& queueId) { return sharedData.isResponseReady(queueId); }
-static inline curl::Response popResponse(const curl::QueueId& queueId) { return sharedData.popResponse(queueId); }
+static inline bool responseReady(const curl::QueueId& queueId) { return sharedData.responseReady(queueId); }
+static inline curl::Response popResponse() { return sharedData.popResponse(); }
 
 
 

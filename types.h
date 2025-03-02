@@ -54,6 +54,8 @@ public:
 
     bool isValid() const { return (m_id >= QueueId::BASE) && (m_id <= QueueId::MAX); }
 
+    std::string toString() const;
+
     operator id_type() const { return m_id; }
 
 private:
