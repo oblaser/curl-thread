@@ -10,9 +10,11 @@ copyright       MIT - Copyright (c) 2025 Oliver Blaser
 #include <thread>
 #include <vector>
 
-#include "../../../curl-thread/curl.h"
-#include "../../../curl-thread/thread.h"
 #include "middleware/util.h"
+
+#include <curl-thread/curl.h>
+#include <curl-thread/thread.h>
+
 
 #define LOG_MODULE_LEVEL LOG_LEVEL_DBG
 #define LOG_MODULE_NAME  MAIN

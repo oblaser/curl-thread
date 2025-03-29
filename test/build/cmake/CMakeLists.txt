@@ -12,6 +12,19 @@ project(curl-thread-test)
 
 
 
+#
+# SDK
+#
+
+# curl-thread
+include_directories(../../../include/)
+
+
+
+#
+# the application
+#
+
 set(BINNAME curl-thread-test)
 
 if(_DEBUG)
@@ -28,7 +41,7 @@ include_directories(../../src/)
 set(SOURCES
 ../../src/main.cpp
 ../../src/middleware/util.cpp
-../../../curl.cpp
+../../../src/curl.cpp
 )
 
 add_executable(${BINNAME} ${SOURCES})

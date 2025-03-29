@@ -12,8 +12,8 @@ copyright       MIT - Copyright (c) 2025 Oliver Blaser
 #include <string>
 #include <vector>
 
-#include "thread.h"
-#include "types.h"
+#include "../curl-thread/thread.h"
+#include "../curl-thread/types.h"
 
 
 #define CURLTHREAD_VERSION_MAJ (3)

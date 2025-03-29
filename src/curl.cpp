@@ -9,10 +9,13 @@ copyright       MIT - Copyright (c) 2025 Oliver Blaser
 #include <random>
 #include <string>
 
-#include "curl.h"
-#include "thread.h"
-#include "types.h"
+#include "../include/curl-thread/curl.h"
+#include "../include/curl-thread/thread.h"
+#include "../include/curl-thread/types.h"
 
+// VS Properties:
+//      - C/C++ > General > Additional Include Dirs: `$(sdk)/curl/x86/include`
+//      - Linker > Input > Additional Dependencies: `Normaliz.lib;Ws2_32.lib;Wldap32.lib;Crypt32.lib;advapi32.lib;$(sdk)/curl/x86/lib/libcurl_a.lib;`
 #define CURL_NO_OLDIES
 #define CURL_STATICLIB
 #include <curl/curl.h>
@@ -552,7 +555,10 @@ std::string curl::QueueId::toString() const
 
 
 
-const char* const curl::HeaderField::delimiter = ": ";
+
+
+#define ___curl_HeaderField_delimiter (": ")
+const char* const curl::HeaderField::delimiter = ___curl_HeaderField_delimiter;
 
 std::string curl::HeaderField::key() const
 {
@@ -563,7 +569,7 @@ std::string curl::HeaderField::key() const
 std::string curl::HeaderField::value() const
 {
     const size_t delimiterPos = m_curlStr.find(delimiter);
-    CONSTEXPR size_t delimiterLength = curl::util::strlen(delimiter);
+    CONSTEXPR size_t delimiterLength = curl::util::strlen(___curl_HeaderField_delimiter);
     return m_curlStr.substr(delimiterPos + delimiterLength);
 }
 
